@@ -16,7 +16,7 @@ cache/
 Logs/
 logs/
 data/
-plugins/
+/plugins/
 
 # OS
 Thumbs.db

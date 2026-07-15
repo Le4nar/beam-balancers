@@ -1,6 +1,25 @@
 {
   "AFilmix": {
     "enable": true,
-    "token": "ВАШ_ТОКЕН_FILMIX"
+    "token": "***"
+  },
+  "BaseModule": {
+    "SkipModules": [
+      "GStreamer",
+      "Transcoding",
+      "WebLog",
+      "CacheMedia",
+      "Potok",
+      "TelegramAuth",
+      "TelegramAuthBot"
+    ]
+  },
+  "chromium": {
+    "enable": true,
+    "executablePath": "/usr/bin/chromium",
+    "Args": ["--no-sandbox", "--disable-setuid-sandbox"]
+  },
+  "listen": {
+    "port": 9118
   }
 }

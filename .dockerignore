@@ -1,0 +1,12 @@
+.git
+.gitignore
+current.conf
+cache/
+logs/
+database/
+data/
+wwwroot/module/
+*.bat
+*.ps1
+lampac-start.*
+lampac-aonline-test.*
