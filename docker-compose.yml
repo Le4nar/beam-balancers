@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  lampac:
+    build: .
+    container_name: beam-balancers
+    ports:
+      - "9118:9118"
+    volumes:
+      # Mount init.conf so you can edit token without rebuilding
+      - ./init.conf:/app/init.conf:ro
+      # Persist database between restarts
+      - ./database:/app/database
+    restart: unless-stopped
