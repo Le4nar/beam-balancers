@@ -1,0 +1,33 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.DotSettings
+
+# Config with secrets
+init.conf
+database/backup/
+
+# Runtime data
+database/
+chromium_cache/
+cache/
+Logs/
+logs/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Hermes planning files
+.hermes/
+
+# Module repository
+module/repository.yaml
