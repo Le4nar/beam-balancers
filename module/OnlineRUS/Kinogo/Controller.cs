@@ -1,0 +1,398 @@
+using Microsoft.AspNetCore.Mvc;
+using Newtonsoft.Json;
+using Shared;
+using Shared.Attributes;
+using Shared.Models.Base;
+using Shared.Models.Online.Settings;
+using Shared.Models.Templates;
+using Shared.PlaywrightCore;
+using Shared.Services.HTTP;
+using Shared.Services.RxEnumerate;
+using Shared.Services.Utilities;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using System.Web;
+
+namespace Kinogo;
+
+public class KinogoController : BaseOnlineController
+{
+    public KinogoController() : base(ModInit.conf) { }
+
+    [HttpGet, Staticache(manually: true)]
+    [Route("lite/kinogo")]
+    async public Task<ActionResult> Index(string title, string original_title, short year, bool rjson, string href, bool similar, short s = -1, int t = -1)
+    {
+        if (await IsRequestBlocked(rch: true))
+            return badInitMsg;
+
+        #region search
+        if (string.IsNullOrEmpty(href))
+        {
+            if (string.IsNullOrEmpty(title))
+                return OnError("search params");
+
+        reset_search:
+            var search = await InvokeCacheResult<SearchModel>($"kinogo:search:{title}:{year}", TimeSpan.FromHours(4), async e =>
+            {
+                SearchModel result = null;
+
+                if (rch?.enable == true)
+                {
+                    await rch.GetSpan($"{init.host}/search/{title}", html =>
+                    {
+                        result = SearchResult(html, title, year);
+                    });
+                }
+                else
+                {
+                    await PlaywrightHttp.GetSpan(init.plugin, $"{init.host}/search/{title}", html =>
+                    {
+                        result = SearchResult(html, title, year);
+                    }, proxy: proxy_data);
+                }
+
+                if (result == null)
+                    return e.Fail("search-result", refresh_proxy: true);
+
+                return e.Success(result);
+            });
+
+            if (similar || string.IsNullOrEmpty(search.Value?.link))
+                return ContentTpl(search, () => search.Value.similar);
+
+            if (string.IsNullOrEmpty(search.Value?.link))
+            {
+                if (IsRhubFallback(search))
+                    goto reset_search;
+
+                return OnError();
+            }
+
+            href = search.Value?.link;
+        }
+        #endregion
+
+        if (string.IsNullOrEmpty(href))
+            return OnError("href");
+
+        #region embed
+    reset_embed:
+
+        var embed = await InvokeCacheResult<string>($"kinogo:{href}", TimeSpan.FromHours(4), async e =>
+        {
+            string iframeUri = null;
+            string targetHref = $"{init.host}/{href}";
+
+            if (rch?.enable == true)
+            {
+                await rch.GetSpan(init.cors(targetHref), html =>
+                {
+                    iframeUri = Rx.Match(html, "<iframe [^>]+data-src=\"([^\"]+)\"");
+                });
+            }
+            else
+            {
+                await PlaywrightHttp.GetSpan(init.plugin, init.cors(targetHref), html =>
+                {
+                    iframeUri = Rx.Match(html, "<iframe [^>]+data-src=\"([^\"]+)\"");
+                });
+            }
+
+            if (iframeUri == null)
+                return e.Fail("iframeUri", refresh_proxy: true);
+
+            string embedUrl = iframeUri.StartsWith("//") ? $"https:{iframeUri}" : iframeUri;
+
+            if (string.IsNullOrEmpty(embedUrl))
+                return e.Fail("embedUrl", refresh_proxy: true);
+
+            return e.Success(embedUrl);
+        });
+
+        if (IsRhubFallback(embed))
+            goto reset_embed;
+
+        if (!embed.IsSuccess)
+            return OnError(embed.ErrorMsg);
+        #endregion
+
+        #region iframe
+    reset_iframe:
+
+        var cache = await InvokeCacheResult<List<PlaylistItem>>(ipkey($"kinogo:{embed.Value}"), 20, async e =>
+        {
+            string fileEncode = null;
+            var embedHeaders = httpHeaders(init, HeadersModel.Init("referer", $"{init.host}/{href}"));
+
+            if (rch?.enable == true)
+            {
+                await rch.GetSpan(init.cors(embed.Value), html =>
+                {
+                    fileEncode = Rx.Match(html, "\"file\":\"([^\"]+)\"");
+                }, embedHeaders);
+            }
+            else
+            {
+                await PlaywrightHttp.GetSpan(init.plugin, init.cors(embed.Value), html =>
+                {
+                    fileEncode = Rx.Match(html, "\"file\":\"([^\"]+)\"");
+                }, headers: embedHeaders, proxy_data);
+            }
+
+            if (string.IsNullOrEmpty(fileEncode))
+                return e.Fail("fileEncode", refresh_proxy: true);
+
+            string playlistJson = await DecodeFile(init, fileEncode);
+            if (string.IsNullOrEmpty(playlistJson))
+                return e.Fail("playlistJson");
+
+            try
+            {
+                var playlist = JsonConvert.DeserializeObject<List<PlaylistItem>>(playlistJson);
+                if (playlist == null || playlist.Count == 0)
+                    return e.Fail("playlist");
+
+                return e.Success(playlist);
+            }
+            catch
+            {
+                return e.Fail("DeserializeObject");
+            }
+        });
+
+        if (IsRhubFallback(cache))
+            goto reset_iframe;
+        #endregion
+
+        return ContentTpl(cache,
+            () => BuildResult(cache.Value, title, original_title, year, s, t, rjson, href)
+        );
+    }
+
+
+    #region BuildResult
+    ITplResult BuildResult(List<PlaylistItem> playlist, string title, string original_title, short year, short s, int t, bool rjson, string href)
+    {
+        if (!string.IsNullOrEmpty(playlist.FirstOrDefault()?.file))
+        {
+            var mtpl = new MovieTpl(title, original_title);
+
+            foreach (var source in playlist)
+            {
+                string voice = source.title;
+                string file = source.file;
+
+                if (string.IsNullOrEmpty(voice) || string.IsNullOrEmpty(file))
+                    continue;
+
+                if (file.StartsWith("//"))
+                    file = "https:" + file;
+
+                #region subtitle
+                var subtitles = new SubtitleTpl();
+                string _subs = source.subtitle;
+                if (!string.IsNullOrEmpty(_subs))
+                {
+                    var match = new Regex("\\[([^\\]]+)\\]([^\\[\\,]+)").Match(_subs);
+                    while (match.Success)
+                    {
+                        string srt = match.Groups[2].Value;
+                        if (srt.StartsWith("//"))
+                            srt = "https:" + srt;
+
+                        subtitles.Append(match.Groups[1].Value, HostStreamProxy(srt));
+                        match = match.NextMatch();
+                    }
+                }
+                #endregion
+
+                mtpl.Append(
+                    Regex.Replace(voice, "<[^>]+>", ""),
+                    HostStreamProxy(file),
+                    subtitles: subtitles,
+                    vast: init.vast
+                );
+            }
+
+            return mtpl;
+        }
+        else
+        {
+            string enc_title = HttpUtility.UrlEncode(title);
+            string enc_original_title = HttpUtility.UrlEncode(original_title);
+            string enc_href = HttpUtility.UrlEncode(href);
+
+            if (s == -1)
+            {
+                var tpl = new SeasonTpl(playlist.Count);
+                foreach (var season in playlist)
+                {
+                    string _s = Regex.Match(season.title ?? string.Empty, " ([0-9]+)$").Groups[1].Value;
+                    if (!string.IsNullOrEmpty(_s))
+                    {
+                        tpl.Append(
+                            $"{_s} сезон",
+                            $"{host}/lite/kinogo?rjson={rjson}&title={enc_title}&original_title={enc_original_title}&year={year}&href={enc_href}&s={_s}",
+                            _s
+                        );
+                    }
+                }
+
+                return tpl;
+            }
+            else
+            {
+                var episodes = playlist.First(i => (i.title ?? string.Empty).EndsWith($" {s}")).folder;
+
+                #region Перевод
+                var vtpl = new VoiceTpl();
+                var hashSet = new HashSet<int>();
+
+                foreach (var episode in episodes)
+                {
+                    if (episode.folder == null)
+                        continue;
+
+                    foreach (var voice in episode.folder)
+                    {
+                        int voice_id = voice.voice_id;
+                        if (hashSet.Add(voice_id))
+                        {
+                            if (t == -1)
+                                t = voice_id;
+
+                            vtpl.Append(
+                                voice.title,
+                                t == voice_id,
+                                $"{host}/lite/kinogo?rjson={rjson}&title={enc_title}&original_title={enc_original_title}&year={year}&href={enc_href}&s={s}&t={voice_id}"
+                            );
+                        }
+                    }
+                }
+                #endregion
+
+                var etpl = new EpisodeTpl(vtpl, episodes.Count);
+
+                foreach (var episode in episodes)
+                {
+                    string name = episode.title;
+                    string file = episode.folder?.FirstOrDefault(i => i.voice_id == t)?.file;
+
+                    if (string.IsNullOrEmpty(file))
+                        continue;
+
+                    if (file.StartsWith("//"))
+                        file = "https:" + file;
+
+                    #region subtitle
+                    var subtitles = new SubtitleTpl();
+                    string _subs = episode.subtitle;
+
+                    if (!string.IsNullOrEmpty(_subs))
+                    {
+                        var match = new Regex("\\[([^\\]]+)\\]([^\\[\\,]+)").Match(_subs);
+                        while (match.Success)
+                        {
+                            string srt = match.Groups[2].Value;
+                            if (srt.StartsWith("//"))
+                                srt = "https:" + srt;
+
+                            subtitles.Append(match.Groups[1].Value, HostStreamProxy(srt));
+                            match = match.NextMatch();
+                        }
+                    }
+                    #endregion
+
+                    etpl.Append(
+                        name,
+                        title ?? original_title,
+                        s,
+                        Regex.Match(name, " ([0-9]+)$").Groups[1].Value,
+                        HostStreamProxy(file),
+                        subtitles: subtitles,
+                        vast: init.vast
+                    );
+                }
+
+                return etpl;
+            }
+        }
+    }
+    #endregion
+
+    #region SearchResult
+    SearchModel SearchResult(ReadOnlySpan<char> html, string title, int year)
+    {
+        if (html.IsEmpty)
+            return null;
+
+        var rx = Rx.Matches("<div id=\"[0-9]+\" class=\"shortstory\">(.*?)<div class=\"shortstory__meta\">", html, 0, RegexOptions.Singleline);
+        if (rx.Count == 0)
+            return null;
+
+        string link = null;
+        string stitle = SearchNameTo.Convert(title);
+
+        var similar = new SimilarTpl(rx.Count);
+
+        foreach (var row in rx.Rows())
+        {
+            string href = row.Match("<a href=\"https?://[^/]+/([^\"#]+)");
+            if (string.IsNullOrEmpty(href))
+                continue;
+
+            string name = row.Match("<h2>([^<]+)</h2>");
+            if (string.IsNullOrEmpty(name))
+                continue;
+
+            string blockYear = row.Match("Год выпуска:</b><a[^>]*>([0-9]{4})");
+
+            string img = row.Match("<img\\s+data-src=\"([^\"]+)\"");
+            if (!string.IsNullOrEmpty(img))
+                img = ModInit.conf.host + img;
+
+            string uri = $"{host}/lite/kinogo?href={HttpUtility.UrlEncode(href)}";
+            similar.Append(name, blockYear, string.Empty, uri, PosterApi.Size(img));
+
+            if (SearchNameTo.Contains(name, stitle) && blockYear == year.ToString())
+                link = href;
+        }
+
+        if (string.IsNullOrEmpty(link) && similar.IsEmpty)
+            return null;
+
+        return new SearchModel()
+        {
+            link = link,
+            similar = similar
+        };
+    }
+    #endregion
+
+    #region DecodeFile
+    async Task<string> DecodeFile(OnlinesSettings init, string fileEncode)
+    {
+        try
+        {
+            using (var browser = new PlaywrightBrowser())
+            {
+                var page = await browser.NewPageAsync(init.plugin).ConfigureAwait(false);
+                if (page == null)
+                    return null;
+
+                await page.AddScriptTagAsync(new()
+                {
+                    Content = ModInit.playerjs
+                });
+
+                return await page.EvaluateAsync<string>("(input) => decodePlayerjsFile(input)", fileEncode);
+            }
+        }
+        catch { return null; }
+    }
+    #endregion
+}

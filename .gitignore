@@ -1,4 +1,4 @@
-# .NET
+# .NET build
 bin/
 obj/
 *.user
@@ -6,9 +6,8 @@ obj/
 .vs/
 *.DotSettings
 
-# Config with secrets
+# Secrets
 init.conf
-database/backup/
 
 # Runtime data
 database/
@@ -16,6 +15,8 @@ chromium_cache/
 cache/
 Logs/
 logs/
+data/
+plugins/
 
 # OS
 Thumbs.db
@@ -26,8 +27,13 @@ Thumbs.db
 *.swp
 *.swo
 
-# Hermes planning files
+# Playwright
+.playwright/
+
+# Hermes planning
 .hermes/
 
-# Module repository
-module/repository.yaml
+# Other
+appsettings.Production.json
+passwd
+users.json
