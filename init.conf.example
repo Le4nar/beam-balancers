@@ -11,7 +11,17 @@
       "CacheMedia",
       "Potok",
       "TelegramAuth",
-      "TelegramAuthBot"
+      "TelegramAuthBot",
+      "VidSrc",
+      "VidLink",
+      "Videasy",
+      "MovPI",
+      "SmashyStream",
+      "PizdatoeHD",
+      "Vibix",
+      "Kinoflix",
+      "RutubeMovie",
+      "VkMovie"
     ]
   },
   "chromium": {
