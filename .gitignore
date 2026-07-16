@@ -37,3 +37,4 @@ Thumbs.db
 appsettings.Production.json
 passwd
 users.json
+current.conf
